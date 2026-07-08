@@ -63,6 +63,36 @@ using t = typename next_signed_type<T>::type;
 
 }
 
+// Deciding types for intermediate calculations
+namespace next_unsigned
+{
+
+template <typename T>
+struct next_unsigned;
+
+template <>
+struct next_unsigned<std::uint8_t>
+{
+    using type = std::uint16_t;
+};
+
+template <>
+struct next_unsigned<std::uint16_t>
+{
+    using type = std::uint32_t;
+};
+
+template <>
+struct next_unsigned<std::uint32_t>
+{
+    using type = std::int64_t;
+};
+
+template <typename T>
+using t = typename next_unsigned<T>::type;
+
+}
+
 namespace larger_of
 {
 // Get the larger of two types
@@ -177,6 +207,23 @@ constexpr std::optional<ReturnType> subtract(L lhs, R rhs)
         else
         {
             return {};
+        }
+    }
+
+    // Optimize for unsigned types
+    else if constexpr (std::is_unsigned_v<ReturnType> && std::is_unsigned_v<L> && std::is_unsigned_v<R>)
+    {
+        if constexpr (smaller_or_equal<next_unsigned::t<larger_of::t<L, R>>, ReturnType>)
+        {
+            using IntermediateType = ReturnType;
+            return intermediate::subtract<IntermediateType>(lhs, rhs)
+                .and_then(try_cast_to_return);
+        }
+        else
+        {
+            using IntermediateType = std::uintmax_t;
+            return intermediate::subtract<IntermediateType>(lhs, rhs)
+                .and_then(try_cast_to_return);
         }
     }
 
