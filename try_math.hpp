@@ -141,6 +141,38 @@ constexpr bool smaller_or_equal = sizeof(T) <= sizeof(U);
 namespace intermediate
 {
 template <std::unsigned_integral IntermediateType>
+constexpr std::optional<IntermediateType> add(IntermediateType lhs, IntermediateType rhs)
+{
+    // Overflow
+    const auto max_val = std::numeric_limits<IntermediateType>::max() - rhs;
+    if (lhs > max_val)
+        return {};
+
+    return lhs + rhs;
+}
+
+template <std::signed_integral IntermediateType>
+constexpr std::optional<IntermediateType> add(IntermediateType lhs, IntermediateType rhs)
+{
+    if (rhs > 0)
+    {
+        // Overflow
+        const auto max_val = std::numeric_limits<IntermediateType>::max() - rhs;
+        if (lhs > max_val)
+            return {};
+    }
+    else
+    {
+        // Underflow
+        const auto min_val = std::numeric_limits<IntermediateType>::lowest() - rhs;
+        if (lhs < min_val)
+            return {};
+    }
+
+    return lhs + rhs;
+}
+
+template <std::unsigned_integral IntermediateType>
 constexpr std::optional<IntermediateType> subtract(IntermediateType lhs, IntermediateType rhs)
 {
     // Underflow
@@ -178,6 +210,76 @@ namespace detail
 struct not_provided_t
 {
 };
+
+template <std::integral ReturnType, std::integral L, std::integral R>
+constexpr std::optional<ReturnType> add(L lhs, R rhs)
+{
+    auto try_cast_to_return = [](auto sum) -> std::optional<ReturnType> {
+        if (!std::in_range<ReturnType>(sum))
+            return {};
+        return static_cast<ReturnType>(sum);
+    };
+
+    if constexpr (sizeof(L) == sizeof(std::uintmax_t) || sizeof(R) == sizeof(std::uintmax_t))
+    {
+        if (std::in_range<std::intmax_t>(lhs) && std::in_range<std::intmax_t>(rhs))
+        {
+            using IntermediateType = std::intmax_t;
+            return intermediate::add<IntermediateType>(lhs, rhs)
+                .and_then(try_cast_to_return);
+        }
+        if (std::in_range<std::uintmax_t>(lhs) && std::in_range<std::uintmax_t>(rhs))
+        {
+            using IntermediateType = std::uintmax_t;
+            return intermediate::add<IntermediateType>(lhs, rhs)
+                .and_then(try_cast_to_return);
+        }
+        else
+        {
+            return {};
+        }
+    }
+
+    // Optimize for unsigned types
+    else if constexpr (std::is_unsigned_v<ReturnType> && std::is_unsigned_v<L> && std::is_unsigned_v<R>)
+    {
+        if constexpr (smaller_or_equal<next_unsigned::t<larger_of::t<L, R>>, ReturnType>)
+        {
+            return intermediate::add<ReturnType>(lhs, rhs);
+        }
+        else
+        {
+            using IntermediateType = std::uintmax_t;
+            return intermediate::add<IntermediateType>(lhs, rhs)
+                .and_then(try_cast_to_return);
+        }
+    }
+
+    // If we're using intmax anyway, do the intermediate calculations in intmax
+    // This branch has to come now, since the next branch can check for an int larger than intmax
+    else if constexpr (sizeof(ReturnType) == sizeof(std::intmax_t) || sizeof(L) == sizeof(std::intmax_t) || sizeof(R) == sizeof(std::intmax_t))
+    {
+        using IntermediateType = std::intmax_t;
+        return intermediate::add<IntermediateType>(lhs, rhs)
+            .and_then(try_cast_to_return);
+    }
+
+    // if the next signed type (one size up) after the larger type of L/R
+    // is smaller than or equal to the size of the return type,
+    // use the return type for intermediate calculations.
+    // Intermediate calculations must use signed integer in case the value goes negative
+    else if constexpr (smaller_or_equal<next_signed::t<larger_of::t<L, R>>, ReturnType> && std::is_signed_v<ReturnType>)
+    {
+        return intermediate::add<ReturnType>(lhs, rhs);
+    }
+
+    else
+    {
+        using IntermediateType = next_signed::t<larger_of::t<L, larger_of::t<ReturnType, R>>>;
+        return intermediate::add<IntermediateType>(lhs, rhs)
+            .and_then(try_cast_to_return);
+    }
+}
 
 template <std::integral ReturnType, std::integral L, std::integral R>
 constexpr std::optional<ReturnType> subtract(L lhs, R rhs)
@@ -253,6 +355,26 @@ constexpr std::optional<ReturnType> subtract(L lhs, R rhs)
 }
 } // detail
 
+// Add rhs to lhs and return optional on integer overflow
+// Choose your desired return type with the template argument
+// or use the larger of the operands' types by default
+template <typename ReturnType = detail::not_provided_t, std::integral L, std::integral R>
+constexpr auto add(L lhs, R rhs)
+{
+    if constexpr (std::same_as<ReturnType, detail::not_provided_t>)
+    {
+        // eg. add(0, 0)
+        // default return type: larger of L and R
+        return detail::add<larger_of::t<L, R>>(lhs, rhs);
+    }
+    else
+    {
+        // eg. add<std::int16_t>(0, 0)
+        // return type: std::int16_t
+        return detail::add<ReturnType, L, R>(lhs, rhs);
+    }
+}
+
 // Subtract rhs from lhs and return optional on integer overflow
 // Choose your desired return type with the template argument
 // or use the larger of the operands' types by default
@@ -275,6 +397,154 @@ constexpr auto subtract(L lhs, R rhs)
 
 // Set to true for unit tests
 #if false
+/*
+Test type combinations:
+
+|           | int8_t | uint8_t | int16_t | uint16_t | int32_t | uint32_t | int64_t | uint64_t |
+| --------- | ------ | ------- | ------- | -------- | ------- | -------- | ------- | -------- |
+| deduced   |        |         |         |          |         |          |         |          |
+| specified |        |         |         |          |         |          |         |          |
+| L         |        |         |         |          |         |          |         |          |
+| R         |        |         |         |          |         |          |         |          |
+
+Failure branches:
+ - Underflow Intermediate
+ - Overflow Intermediate
+ - Underflow Return Type
+ - Overflow Return Type
+ - Underflow intmax
+ - Overflow intmax
+
+*/
+
+//  -- int8_t, int8_t, int8_t --
+static_assert(add<std::int8_t>(1, 1) == 2);
+static_assert(add<std::int8_t>(std::numeric_limits<std::int8_t>::max(), std::int8_t{ 1 }).has_value() == false);
+static_assert(add<std::int8_t>(std::numeric_limits<std::int8_t>::lowest(), std::int8_t{ -1 }).has_value() == false);
+static_assert(add<std::int8_t>(std::numeric_limits<std::int8_t>::lowest(), std::int8_t{ 1 }) == -127);
+static_assert(add<std::int8_t>(std::numeric_limits<std::int8_t>::max(), std::int8_t{ -1 }) == 126);
+
+// -- unsigned, signed, unsigned --
+static_assert(add<std::uint8_t>(std::numeric_limits<std::int8_t>::max(), std::int8_t{ 1 }) == 128);
+
+//  -- int8_t deduced, int8_t, int8_t --
+static_assert(add(std::numeric_limits<std::int8_t>::max(), std::int8_t{ 1 }).has_value() == false);
+static_assert(add(std::numeric_limits<std::int8_t>::lowest(), std::int8_t{ -1 }).has_value() == false);
+static_assert(add(std::numeric_limits<std::int8_t>::lowest(), std::int8_t{ 1 }) == std::numeric_limits<std::int8_t>::lowest() + 1);
+static_assert(add(std::int8_t{ 0 }, std::int8_t{ 1 }) == 1);
+
+//  -- int8_t explicit, int8_t, int8_t --
+static_assert(add<std::int8_t>(std::numeric_limits<std::int8_t>::max(), std::int8_t{ 1 }).has_value() == false);
+static_assert(add<std::int8_t>(std::numeric_limits<std::int8_t>::lowest(), std::int8_t{ -1 }).has_value() == false);
+static_assert(add<std::int8_t>(std::numeric_limits<std::int8_t>::lowest(), std::int8_t{ 1 }) == std::numeric_limits<std::int8_t>::lowest() + 1);
+static_assert(add<std::int8_t>(std::int8_t{ 0 }, std::int8_t{ 1 }) == 1);
+
+//  -- uint8_t explicit, int8_t, int8_t --
+static_assert(add<std::uint8_t>(std::numeric_limits<std::int8_t>::max(), std::int8_t{ 1 }) == std::numeric_limits<std::int8_t>::max() + 1);
+static_assert(add<std::uint8_t>(std::numeric_limits<std::int8_t>::max(), std::int8_t{ 127 }) == 254);
+static_assert(add<std::uint8_t>(std::numeric_limits<std::int8_t>::lowest(), std::int8_t{ 1 }).has_value() == false);
+static_assert(add<std::uint8_t>(std::int8_t{ 0 }, std::int8_t{ 1 }) == 1);
+
+//  -- uint8_t explicit, uint8_t, int8_t --
+static_assert(add<std::uint8_t>(std::uint8_t{ 0 }, std::int8_t{ 1 }) == std::uint8_t{ 1 });
+static_assert(add<std::uint8_t>(std::numeric_limits<std::uint8_t>::max(), std::int8_t{ 1 }).has_value() == false);
+static_assert(add<std::uint8_t>(std::numeric_limits<std::uint8_t>::max(), std::int8_t{ -1 }) == std::numeric_limits<std::uint8_t>::max() - 1);
+static_assert(add<std::uint8_t>(std::uint8_t{ 0 }, std::int8_t{ -1 }).has_value() == false);
+
+//  -- uint8_t explicit, int8_t, uint8_t --
+static_assert(add<std::uint8_t>(std::int8_t{ 0 }, std::uint8_t{ 1 }) == std::uint8_t{ 1 });
+static_assert(add<std::uint8_t>(std::numeric_limits<std::int8_t>::max(), std::uint8_t{ 1 }) == std::numeric_limits<std::int8_t>::max() + 1);
+static_assert(add<std::uint8_t>(std::numeric_limits<std::int8_t>::lowest(), std::uint8_t{ 1 }).has_value() == false);
+static_assert(add<std::uint8_t>(std::numeric_limits<std::int8_t>::lowest(), std::uint8_t{ 128 }) == 0);
+static_assert(add<std::uint8_t>(std::int8_t{ 1 }, std::uint8_t{ 0 }) == std::uint8_t{ 1 });
+
+//  -- uint8_t deduced, uint8_t, uint8_t --
+static_assert(add(std::numeric_limits<std::uint8_t>::max(), std::uint8_t{ 1 }).has_value() == false);
+static_assert(add(std::numeric_limits<std::uint8_t>::max(), std::uint8_t{ 0 }) == std::numeric_limits<std::uint8_t>::max());
+static_assert(add(std::uint8_t{ 0 }, std::uint8_t{ 1 }) == std::uint8_t{ 1 });
+static_assert(add(std::uint8_t{ 5 }, std::uint8_t{ 3 }) == std::uint8_t{ 8 });
+
+//  -- uint8_t explicit, uint8_t, uint8_t --
+static_assert(add<std::uint8_t>(std::numeric_limits<std::uint8_t>::max(), std::uint8_t{ 1 }).has_value() == false);
+static_assert(add<std::uint8_t>(std::numeric_limits<std::uint8_t>::max(), std::uint8_t{ 0 }) == std::numeric_limits<std::uint8_t>::max());
+static_assert(add<std::uint8_t>(std::uint8_t{ 0 }, std::uint8_t{ 1 }) == std::uint8_t{ 1 });
+static_assert(add<std::uint8_t>(std::uint8_t{ 5 }, std::uint8_t{ 3 }) == std::uint8_t{ 8 });
+
+//  -- int16_t deduced, int16_t, int16_t --
+static_assert(add(std::numeric_limits<std::int16_t>::max(), std::int16_t{ 1 }).has_value() == false);
+static_assert(add(std::numeric_limits<std::int16_t>::lowest(), std::int16_t{ -1 }).has_value() == false);
+static_assert(add(std::numeric_limits<std::int16_t>::lowest(), std::int16_t{ 1 }) == std::numeric_limits<std::int16_t>::lowest() + 1);
+static_assert(add(std::int16_t{ 0 }, std::int16_t{ 1 }) == 1);
+
+//  -- int16_t explicit, int16_t, int16_t --
+static_assert(add<std::int16_t>(std::numeric_limits<std::int16_t>::max(), std::int16_t{ 1 }).has_value() == false);
+static_assert(add<std::int16_t>(std::numeric_limits<std::int16_t>::lowest(), std::int16_t{ -1 }).has_value() == false);
+static_assert(add<std::int16_t>(std::numeric_limits<std::int16_t>::lowest(), std::int16_t{ 1 }) == std::numeric_limits<std::int16_t>::lowest() + 1);
+static_assert(add<std::int16_t>(std::int16_t{ 0 }, std::int16_t{ 1 }) == 1);
+
+//  -- uint16_t explicit, int16_t, int16_t --
+static_assert(add<std::uint16_t>(std::numeric_limits<std::int16_t>::max(), std::int16_t{ 1 }) == std::numeric_limits<std::int16_t>::max() + 1);
+static_assert(add<std::uint16_t>(std::numeric_limits<std::int16_t>::max(), std::int16_t{ 32767 }) == 32767 * 2);
+static_assert(add<std::uint16_t>(std::numeric_limits<std::int16_t>::lowest(), std::int16_t{ 1 }).has_value() == false);
+static_assert(add<std::uint16_t>(std::int16_t{ 0 }, std::int16_t{ 1 }) == 1);
+
+//  -- uint16_t explicit, uint16_t, int16_t --
+static_assert(add<std::uint16_t>(std::uint16_t{ 0 }, std::int16_t{ 1 }) == std::uint16_t{ 1 });
+static_assert(add<std::uint16_t>(std::numeric_limits<std::uint16_t>::max(), std::int16_t{ 1 }).has_value() == false);
+static_assert(add<std::uint16_t>(std::numeric_limits<std::uint16_t>::max(), std::int16_t{ -1 }) == std::numeric_limits<std::uint16_t>::max() - 1);
+static_assert(add<std::uint16_t>(std::uint16_t{ 0 }, std::int16_t{ -1 }).has_value() == false);
+
+//  -- uint16_t explicit, int16_t, uint16_t --
+static_assert(add<std::uint16_t>(std::int16_t{ 0 }, std::uint16_t{ 1 }) == std::uint16_t{ 1 });
+static_assert(add<std::uint16_t>(std::numeric_limits<std::int16_t>::max(), std::uint16_t{ 1 }) == std::numeric_limits<std::int16_t>::max() + 1);
+static_assert(add<std::uint16_t>(std::numeric_limits<std::int16_t>::lowest(), std::uint16_t{ 1 }).has_value() == false);
+static_assert(add<std::uint16_t>(std::numeric_limits<std::int16_t>::lowest(), std::uint16_t{ 32768 }) == 0);
+static_assert(add<std::uint16_t>(std::int16_t{ 1 }, std::uint16_t{ 0 }) == std::uint16_t{ 1 });
+
+//  -- uint16_t deduced, uint16_t, uint16_t --
+static_assert(add(std::numeric_limits<std::uint16_t>::max(), std::uint16_t{ 1 }).has_value() == false);
+static_assert(add(std::numeric_limits<std::uint16_t>::max(), std::uint16_t{ 0 }) == std::numeric_limits<std::uint16_t>::max());
+static_assert(add(std::uint16_t{ 0 }, std::uint16_t{ 1 }) == std::uint16_t{ 1 });
+static_assert(add(std::uint16_t{ 1000 }, std::uint16_t{ 500 }) == std::uint16_t{ 1500 });
+
+//  -- uint16_t explicit, uint16_t, uint16_t --
+static_assert(add<std::uint16_t>(std::numeric_limits<std::uint16_t>::max(), std::uint16_t{ 1 }).has_value() == false);
+static_assert(add<std::uint16_t>(std::numeric_limits<std::uint16_t>::max(), std::uint16_t{ 0 }) == std::numeric_limits<std::uint16_t>::max());
+static_assert(add<std::uint16_t>(std::uint16_t{ 0 }, std::uint16_t{ 1 }) == std::uint16_t{ 1 });
+static_assert(add<std::uint16_t>(std::uint16_t{ 1000 }, std::uint16_t{ 500 }) == std::uint16_t{ 1500 });
+
+//  -- int32_t deduced, int32_t, int32_t --
+static_assert(add(std::numeric_limits<std::int32_t>::max(), std::int32_t{ 1 }).has_value() == false);
+static_assert(add(std::numeric_limits<std::int32_t>::lowest(), std::int32_t{ -1 }).has_value() == false);
+static_assert(add(std::numeric_limits<std::int32_t>::lowest(), std::int32_t{ 1 }) == std::numeric_limits<std::int32_t>::lowest() + 1);
+static_assert(add(std::int32_t{ 0 }, std::int32_t{ 1 }) == 1);
+
+//  -- int32_t explicit, int32_t, int32_t --
+static_assert(add<std::int32_t>(std::numeric_limits<std::int32_t>::max(), std::int32_t{ 1 }).has_value() == false);
+static_assert(add<std::int32_t>(std::numeric_limits<std::int32_t>::lowest(), std::int32_t{ -1 }).has_value() == false);
+static_assert(add<std::int32_t>(std::numeric_limits<std::int32_t>::lowest(), std::int32_t{ 1 }) == std::numeric_limits<std::int32_t>::lowest() + 1);
+static_assert(add<std::int32_t>(std::int32_t{ 0 }, std::int32_t{ 1 }) == 1);
+
+//  -- uint32_t explicit, int32_t, int32_t --
+static_assert(add<std::uint32_t>(std::numeric_limits<std::int32_t>::max(), std::int32_t{ 1 }) == static_cast<std::uint32_t>(std::numeric_limits<std::int32_t>::max()) + 1);
+static_assert(add<std::uint32_t>(std::numeric_limits<std::int32_t>::max(), std::int32_t{ 2147483647 }) == 2147483647u * 2u);
+static_assert(add<std::uint32_t>(std::numeric_limits<std::int32_t>::lowest(), std::int32_t{ -1 }).has_value() == false);
+static_assert(add<std::uint32_t>(std::int32_t{ 0 }, std::int32_t{ 1 }) == 1);
+
+//  -- uint32_t explicit, uint32_t, int32_t --
+static_assert(add<std::uint32_t>(std::uint32_t{ 0 }, std::int32_t{ 1 }) == std::uint32_t{ 1 });
+static_assert(add<std::uint32_t>(std::numeric_limits<std::uint32_t>::max(), std::int32_t{ 1 }).has_value() == false);
+static_assert(add<std::uint32_t>(std::numeric_limits<std::uint32_t>::max(), std::int32_t{ -1 }) == std::numeric_limits<std::uint32_t>::max() - 1);
+static_assert(add<std::uint32_t>(std::uint32_t{ 0 }, std::int32_t{ -1 }).has_value() == false);
+
+//  -- uint32_t explicit, int32_t, uint32_t --
+static_assert(add<std::uint32_t>(std::int32_t{ 0 }, std::uint32_t{ 1 }) == std::uint32_t{ 1 });
+static_assert(add<std::uint32_t>(std::numeric_limits<std::int32_t>::max(), std::uint32_t{ 1 }) == std::numeric_limits<std::int32_t>::max() + 1u);
+static_assert(add<std::uint32_t>(std::numeric_limits<std::int32_t>::lowest(), std::uint32_t{ 1 }).has_value() == false);
+
+#endif
+
+#if true
 
 /*
 Test type combinations:
