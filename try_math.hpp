@@ -226,8 +226,7 @@ constexpr std::optional<ReturnType> subtract(L lhs, R rhs)
     }
 
     // If we're using intmax anyway, do the intermediate calculations in intmax
-    // This branch has to come now, since the next branch checks for a
-    // larger int than intmax
+    // This branch has to come now, since the next branch can check for an int larger than intmax
     else if constexpr (sizeof(ReturnType) == sizeof(std::intmax_t) || sizeof(L) == sizeof(std::intmax_t) || sizeof(R) == sizeof(std::intmax_t))
     {
         using IntermediateType = std::intmax_t;
