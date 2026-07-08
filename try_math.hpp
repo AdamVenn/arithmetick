@@ -243,10 +243,10 @@ constexpr std::optional<ReturnType> subtract(L lhs, R rhs)
         return intermediate::subtract<ReturnType>(lhs, rhs);
     }
 
-    // Intermediate calculations could overflow return type, so use intmax
+    // Use smallest intermediate type which won't overflow
     else
     {
-        using IntermediateType = std::intmax_t;
+        using IntermediateType = next_signed::t<larger_of::t<L, larger_of::t<ReturnType, R>>>;
         return intermediate::subtract<IntermediateType>(lhs, rhs)
             .and_then(try_cast_to_return);
     }
