@@ -215,9 +215,7 @@ constexpr std::optional<ReturnType> subtract(L lhs, R rhs)
     {
         if constexpr (smaller_or_equal<next_unsigned::t<larger_of::t<L, R>>, ReturnType>)
         {
-            using IntermediateType = ReturnType;
-            return intermediate::subtract<IntermediateType>(lhs, rhs)
-                .and_then(try_cast_to_return);
+            return intermediate::subtract<ReturnType>(lhs, rhs);
         }
         else
         {
@@ -243,9 +241,7 @@ constexpr std::optional<ReturnType> subtract(L lhs, R rhs)
     // Intermediate calculations must use signed integer in case the value goes negative
     else if constexpr (smaller_or_equal<next_signed::t<larger_of::t<L, R>>, ReturnType> && std::is_signed_v<ReturnType>)
     {
-        using IntermediateType = ReturnType;
-        return intermediate::subtract<IntermediateType>(lhs, rhs)
-            .and_then(try_cast_to_return);
+        return intermediate::subtract<ReturnType>(lhs, rhs);
     }
 
     // Intermediate calculations could overflow return type, so use intmax
