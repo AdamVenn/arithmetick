@@ -428,6 +428,26 @@ constexpr auto subtract(L lhs, R rhs)
     }
 }
 
+// Multiply lhs and rhs and return optional on integer overflow
+// Choose your desired return type with the template argument
+// or use the larger of the operands' types by default
+template <typename ReturnType = detail::not_provided_t, std::integral L, std::integral R>
+constexpr auto multiply(L lhs, R rhs)
+{
+    if constexpr (std::same_as<ReturnType, detail::not_provided_t>)
+    {
+        // eg. multiply(0, 0)
+        // default return type: larger of L and R
+        return detail::multiply<larger_of::t<L, R>>(lhs, rhs);
+    }
+    else
+    {
+        // eg. multiply<std::int16_t>(0, 0)
+        // return type: std::int16_t
+        return detail::multiply<ReturnType, L, R>(lhs, rhs);
+    }
+}
+
 // Set to true for unit tests
 #if false
 /*
