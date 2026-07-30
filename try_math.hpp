@@ -388,7 +388,7 @@ constexpr std::optional<ReturnType> subtract(L lhs, R rhs)
 }
 } // detail
 
-// Add rhs to lhs and return optional on integer overflow
+// Add lhs and rhs and return optional on integer overflow
 // Choose your desired return type with the template argument
 // or use the larger of the operands' types by default
 template <typename ReturnType = detail::not_provided_t, std::integral L, std::integral R>
