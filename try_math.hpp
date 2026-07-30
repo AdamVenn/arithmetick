@@ -202,6 +202,39 @@ constexpr std::optional<IntermediateType> subtract(IntermediateType lhs, Interme
 
     return lhs - rhs;
 }
+
+template <std::unsigned_integral IntermediateType>
+constexpr std::optional<IntermediateType> multiply(IntermediateType lhs, IntermediateType rhs)
+{
+    // Overflow
+    const auto max_val = std::numeric_limits<IntermediateType>::max() / rhs;
+    if (lhs > max_val)
+        return {};
+
+    return lhs * rhs;
+}
+
+template <std::signed_integral IntermediateType>
+constexpr std::optional<IntermediateType> multiply(IntermediateType lhs, IntermediateType rhs)
+{
+    if (rhs > 0)
+    {
+        // Overflow
+        const auto max_val = std::numeric_limits<IntermediateType>::max() / rhs;
+        if (lhs > max_val)
+            return {};
+    }
+    else
+    {
+        // Underflow
+        const auto min_val = std::numeric_limits<IntermediateType>::lowest() * rhs;
+        if (lhs < min_val)
+            return {};
+    }
+
+    return lhs * rhs;
+}
+
 } // namespace intermediate
 
 namespace detail
