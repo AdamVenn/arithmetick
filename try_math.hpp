@@ -8,6 +8,46 @@
 #include <type_traits>
 #include <utility>
 
+/*
+
+To do:
+
+MSVC intrinsics:
+
+// Source - https://stackoverflow.com/a/77551357
+// Posted by Passer By, modified by community. See post 'Timeline' for change history
+// Retrieved 2026-07-30, License - CC BY-SA 4.0
+
+#include<intrin.h>
+#include<cstdint>
+#include<optional>
+#include<limits>
+
+template<typename I>
+std::optional<I> mul(I x, I y)
+{
+    if constexpr(std::is_same_v<I, std::int64_t>)
+    {
+        auto hi = __mulh(x, y);
+        auto lo = std::uint64_t(x) * std::uint64_t(y);
+        auto neg = lo >> 63;
+
+        if(hi != 0 && hi != -1)
+            return {};
+        if((hi == 0 && neg) || (hi == -1 && !neg))
+            return {};
+        return x * y;
+    }
+    else
+    {
+        auto res = std::int64_t(x) * y;
+        if(res > std::numeric_limits<I>::max() || res < std::numeric_limits<I>::min())
+            return {};
+        return I(res);
+    }
+}
+
+*/
 /* Tries to do math, but returns empty optionals if there are errors */
 namespace try_to
 {
@@ -206,33 +246,54 @@ constexpr std::optional<IntermediateType> subtract(IntermediateType lhs, Interme
 template <std::unsigned_integral IntermediateType>
 constexpr std::optional<IntermediateType> multiply(IntermediateType lhs, IntermediateType rhs)
 {
-    // Overflow
+#if defined(__GNUC__) || defined(__clang__)
+    IntermediateType result;
+    if (__builtin_mul_overflow(lhs, rhs, &result))
+        return {};
+    return result;
+#else
     const auto max_val = std::numeric_limits<IntermediateType>::max() / rhs;
     if (lhs > max_val)
         return {};
 
     return lhs * rhs;
+#endif
 }
 
 template <std::signed_integral IntermediateType>
 constexpr std::optional<IntermediateType> multiply(IntermediateType lhs, IntermediateType rhs)
 {
-    if (rhs > 0)
+#if defined(__GNUC__) || defined(__clang__)
+    IntermediateType result;
+    if (__builtin_mul_overflow(lhs, rhs, &result))
+        return {};
+    return result;
+#else
+
+    if (lhs == 0 || rhs == 0)
+        return IntermediateType(0);
+
+    const auto max_val = std::numeric_limits<IntermediateType>::max();
+    const auto min_val = std::numeric_limits<IntermediateType>::lowest();
+
+    if ((lhs > 0 && rhs > 0) || (lhs < 0 && rhs < 0))
     {
-        // Overflow
-        const auto max_val = std::numeric_limits<IntermediateType>::max() / rhs;
-        if (lhs > max_val)
+        if (lhs > 0 && rhs > max_val / lhs)
+            return {};
+        if (lhs < 0 && rhs < max_val / lhs)
             return {};
     }
     else
     {
-        // Underflow
-        const auto min_val = std::numeric_limits<IntermediateType>::lowest() * rhs;
-        if (lhs < min_val)
+        if (lhs > 0 && rhs < min_val / lhs)
+            return {};
+        if (lhs < 0 && rhs > min_val / lhs)
             return {};
     }
 
     return lhs * rhs;
+
+#endif
 }
 
 } // namespace intermediate
@@ -386,6 +447,60 @@ constexpr std::optional<ReturnType> subtract(L lhs, R rhs)
             .and_then(try_cast_to_return);
     }
 }
+
+template <std::integral ReturnType, std::integral L, std::integral R>
+constexpr std::optional<ReturnType> multiply(L lhs, R rhs)
+{
+    auto try_cast_to_return = [](auto sum) -> std::optional<ReturnType> {
+        if (!std::in_range<ReturnType>(sum))
+            return {};
+        return static_cast<ReturnType>(sum);
+    };
+
+    if constexpr (sizeof(L) == sizeof(std::uintmax_t) || sizeof(R) == sizeof(std::uintmax_t))
+    {
+        if (std::in_range<std::intmax_t>(lhs) && std::in_range<std::intmax_t>(rhs))
+        {
+            using IntermediateType = std::intmax_t;
+            return intermediate::multiply<IntermediateType>(lhs, rhs)
+                .and_then(try_cast_to_return);
+        }
+        if (std::in_range<std::uintmax_t>(lhs) && std::in_range<std::uintmax_t>(rhs))
+        {
+            using IntermediateType = std::uintmax_t;
+            return intermediate::multiply<IntermediateType>(lhs, rhs)
+                .and_then(try_cast_to_return);
+        }
+        else
+        {
+            return {};
+        }
+    }
+
+    // Optimize for unsigned types
+    else if constexpr (std::is_unsigned_v<ReturnType> && std::is_unsigned_v<L> && std::is_unsigned_v<R>)
+    {
+        if constexpr (smaller_or_equal<next_unsigned::t<larger_of::t<L, R>>, ReturnType>)
+        {
+            return intermediate::multiply<ReturnType>(lhs, rhs);
+        }
+        else
+        {
+            using IntermediateType = next_unsigned::t<larger_of::t<L, R>>;
+            return intermediate::multiply<IntermediateType>(lhs, rhs)
+                .and_then(try_cast_to_return);
+        }
+    }
+
+    // Do everything else in intmax
+    else
+    {
+        using IntermediateType = std::intmax_t;
+        return intermediate::multiply<IntermediateType>(lhs, rhs)
+            .and_then(try_cast_to_return);
+    }
+}
+
 } // detail
 
 // Add lhs and rhs and return optional on integer overflow
@@ -447,6 +562,9 @@ constexpr auto multiply(L lhs, R rhs)
         return detail::multiply<ReturnType, L, R>(lhs, rhs);
     }
 }
+
+// --------------------------
+// Unit tests: add
 
 // Set to true for unit tests
 #if false
@@ -596,6 +714,9 @@ static_assert(add<std::uint32_t>(std::numeric_limits<std::int32_t>::max(), std::
 static_assert(add<std::uint32_t>(std::numeric_limits<std::int32_t>::lowest(), std::uint32_t{ 1 }).has_value() == false);
 
 #endif
+
+// --------------------------
+// Unit tests: subtract
 
 #if false
 
@@ -1361,6 +1482,139 @@ static_assert(subtract<std::int64_t>(std::uint64_t{ std::numeric_limits<std::int
 // return=uint64_t L=uint64_t R=int32_t
 // return=uint64_t L=uint64_t R=uint32_t
 // return=uint64_t L=uint64_t R=int64_t
+
+#endif
+
+// --------------------------
+// Unit tests: multiply
+
+#if false
+//  -- int8_t, int8_t, int8_t --
+static_assert(multiply<std::int8_t>(2, 3) == 6);
+static_assert(multiply<std::int8_t>(std::numeric_limits<std::int8_t>::max(), std::int8_t{ 2 }).has_value() == false);
+static_assert(multiply<std::int8_t>(std::numeric_limits<std::int8_t>::lowest(), std::int8_t{ 2 }).has_value() == false);
+static_assert(multiply<std::int8_t>(std::numeric_limits<std::int8_t>::lowest(), std::int8_t{ -1 }).has_value() == false);
+static_assert(multiply<std::int8_t>(std::numeric_limits<std::int8_t>::max(), std::int8_t{ 1 }) == std::numeric_limits<std::int8_t>::max());
+
+// -- unsigned, signed, unsigned --
+static_assert(multiply<std::uint8_t>(std::numeric_limits<std::int8_t>::max(), std::int8_t{ 2 }) == 254);
+
+//  -- int8_t deduced, int8_t, int8_t --
+static_assert(multiply(std::numeric_limits<std::int8_t>::max(), std::int8_t{ 2 }).has_value() == false);
+static_assert(multiply(std::numeric_limits<std::int8_t>::lowest(), std::int8_t{ 2 }).has_value() == false);
+static_assert(multiply(std::numeric_limits<std::int8_t>::lowest(), std::int8_t{ -1 }).has_value() == false);
+static_assert(multiply(std::int8_t{ 2 }, std::int8_t{ 3 }) == 6);
+
+//  -- int8_t explicit, int8_t, int8_t --
+static_assert(multiply<std::int8_t>(std::numeric_limits<std::int8_t>::max(), std::int8_t{ 2 }).has_value() == false);
+static_assert(multiply<std::int8_t>(std::numeric_limits<std::int8_t>::lowest(), std::int8_t{ 2 }).has_value() == false);
+static_assert(multiply<std::int8_t>(std::numeric_limits<std::int8_t>::lowest(), std::int8_t{ -1 }).has_value() == false);
+static_assert(multiply<std::int8_t>(std::int8_t{ 2 }, std::int8_t{ 3 }) == 6);
+
+//  -- uint8_t explicit, int8_t, int8_t --
+static_assert(multiply<std::uint8_t>(std::numeric_limits<std::int8_t>::max(), std::int8_t{ 2 }) == 254);
+static_assert(multiply<std::uint8_t>(std::numeric_limits<std::int8_t>::max(), std::int8_t{ 3 }).has_value() == false);
+static_assert(multiply<std::uint8_t>(std::numeric_limits<std::int8_t>::lowest(), std::int8_t{ 1 }).has_value() == false);
+static_assert(multiply<std::uint8_t>(std::int8_t{ 2 }, std::int8_t{ 3 }) == 6);
+
+//  -- uint8_t explicit, uint8_t, int8_t --
+static_assert(multiply<std::uint8_t>(std::uint8_t{ 2 }, std::int8_t{ 3 }) == std::uint8_t{ 6 });
+static_assert(multiply<std::uint8_t>(std::numeric_limits<std::uint8_t>::max(), std::int8_t{ 2 }).has_value() == false);
+static_assert(multiply<std::uint8_t>(std::numeric_limits<std::uint8_t>::max(), std::int8_t{ -1 }).has_value() == false);
+static_assert(multiply<std::uint8_t>(std::uint8_t{ 10 }, std::int8_t{ -1 }).has_value() == false);
+
+//  -- uint8_t explicit, int8_t, uint8_t --
+static_assert(multiply<std::uint8_t>(std::int8_t{ 2 }, std::uint8_t{ 3 }) == std::uint8_t{ 6 });
+static_assert(multiply<std::uint8_t>(std::numeric_limits<std::int8_t>::max(), std::uint8_t{ 2 }) == 254);
+static_assert(multiply<std::uint8_t>(std::numeric_limits<std::int8_t>::lowest(), std::uint8_t{ 2 }).has_value() == false);
+static_assert(multiply<std::uint8_t>(std::int8_t{ 10 }, std::uint8_t{ 20 }) == 200);
+static_assert(multiply<std::uint8_t>(std::int8_t{ 5 }, std::uint8_t{ 10 }) == std::uint8_t{ 50 });
+
+//  -- uint8_t deduced, uint8_t, uint8_t --
+static_assert(multiply(std::numeric_limits<std::uint8_t>::max(), std::uint8_t{ 2 }).has_value() == false);
+static_assert(multiply(std::numeric_limits<std::uint8_t>::max(), std::uint8_t{ 1 }) == std::numeric_limits<std::uint8_t>::max());
+static_assert(multiply(std::uint8_t{ 2 }, std::uint8_t{ 3 }) == std::uint8_t{ 6 });
+static_assert(multiply(std::uint8_t{ 16 }, std::uint8_t{ 16 }).has_value() == false);
+
+//  -- uint8_t explicit, uint8_t, uint8_t --
+static_assert(multiply<std::uint8_t>(std::numeric_limits<std::uint8_t>::max(), std::uint8_t{ 2 }).has_value() == false);
+static_assert(multiply<std::uint8_t>(std::numeric_limits<std::uint8_t>::max(), std::uint8_t{ 1 }) == std::numeric_limits<std::uint8_t>::max());
+static_assert(multiply<std::uint8_t>(std::uint8_t{ 2 }, std::uint8_t{ 3 }) == std::uint8_t{ 6 });
+static_assert(multiply<std::uint8_t>(std::uint8_t{ 16 }, std::uint8_t{ 16 }).has_value() == false);
+
+//  -- int16_t deduced, int16_t, int16_t --
+static_assert(multiply(std::numeric_limits<std::int16_t>::max(), std::int16_t{ 2 }).has_value() == false);
+static_assert(multiply(std::numeric_limits<std::int16_t>::lowest(), std::int16_t{ 2 }).has_value() == false);
+static_assert(multiply(std::numeric_limits<std::int16_t>::lowest(), std::int16_t{ -1 }).has_value() == false);
+static_assert(multiply(std::int16_t{ 100 }, std::int16_t{ 200 }) == 20000);
+
+//  -- int16_t explicit, int16_t, int16_t --
+static_assert(multiply<std::int16_t>(std::numeric_limits<std::int16_t>::max(), std::int16_t{ 2 }).has_value() == false);
+static_assert(multiply<std::int16_t>(std::numeric_limits<std::int16_t>::lowest(), std::int16_t{ 2 }).has_value() == false);
+static_assert(multiply<std::int16_t>(std::numeric_limits<std::int16_t>::lowest(), std::int16_t{ -1 }).has_value() == false);
+static_assert(multiply<std::int16_t>(std::int16_t{ 100 }, std::int16_t{ 200 }) == 20000);
+
+//  -- uint16_t explicit, int16_t, int16_t --
+static_assert(multiply<std::uint16_t>(std::numeric_limits<std::int16_t>::max(), std::int16_t{ 2 }) == 65534);
+static_assert(multiply<std::uint16_t>(std::numeric_limits<std::int16_t>::max(), std::int16_t{ 3 }).has_value() == false);
+static_assert(multiply<std::uint16_t>(std::numeric_limits<std::int16_t>::lowest(), std::int16_t{ 2 }).has_value() == false);
+static_assert(multiply<std::uint16_t>(std::int16_t{ 100 }, std::int16_t{ 200 }) == 20000);
+
+//  -- uint16_t explicit, uint16_t, int16_t --
+static_assert(multiply<std::uint16_t>(std::uint16_t{ 100 }, std::int16_t{ 200 }) == std::uint16_t{ 20000 });
+static_assert(multiply<std::uint16_t>(std::numeric_limits<std::uint16_t>::max(), std::int16_t{ 2 }).has_value() == false);
+static_assert(multiply<std::uint16_t>(std::numeric_limits<std::uint16_t>::max(), std::int16_t{ -1 }).has_value() == false);
+static_assert(multiply<std::uint16_t>(std::uint16_t{ 1000 }, std::int16_t{ -1 }).has_value() == false);
+
+//  -- uint16_t explicit, int16_t, uint16_t --
+static_assert(multiply<std::uint16_t>(std::int16_t{ 100 }, std::uint16_t{ 200 }) == std::uint16_t{ 20000 });
+static_assert(multiply<std::uint16_t>(std::numeric_limits<std::int16_t>::max(), std::uint16_t{ 2 }) == 65534);
+static_assert(multiply<std::uint16_t>(std::numeric_limits<std::int16_t>::lowest(), std::uint16_t{ 2 }).has_value() == false);
+static_assert(multiply<std::uint16_t>(std::int16_t{ 100 }, std::uint16_t{ 1000 }).has_value() == false);
+static_assert(multiply<std::uint16_t>(std::int16_t{ 50 }, std::uint16_t{ 100 }) == std::uint16_t{ 5000 });
+
+//  -- uint16_t deduced, uint16_t, uint16_t --
+static_assert(multiply(std::numeric_limits<std::uint16_t>::max(), std::uint16_t{ 2 }).has_value() == false);
+static_assert(multiply(std::numeric_limits<std::uint16_t>::max(), std::uint16_t{ 1 }) == std::numeric_limits<std::uint16_t>::max());
+static_assert(multiply(std::uint16_t{ 100 }, std::uint16_t{ 200 }) == std::uint16_t{ 20000 });
+static_assert(multiply(std::uint16_t{ 256 }, std::uint16_t{ 256 }).has_value() == false);
+
+//  -- uint16_t explicit, uint16_t, uint16_t --
+static_assert(multiply<std::uint16_t>(std::numeric_limits<std::uint16_t>::max(), std::uint16_t{ 2 }).has_value() == false);
+static_assert(multiply<std::uint16_t>(std::numeric_limits<std::uint16_t>::max(), std::uint16_t{ 1 }) == std::numeric_limits<std::uint16_t>::max());
+static_assert(multiply<std::uint16_t>(std::uint16_t{ 100 }, std::uint16_t{ 200 }) == std::uint16_t{ 20000 });
+static_assert(multiply<std::uint16_t>(std::uint16_t{ 256 }, std::uint16_t{ 256 }).has_value() == false);
+
+//  -- int32_t deduced, int32_t, int32_t --
+static_assert(multiply(std::numeric_limits<std::int32_t>::max(), std::int32_t{ 2 }).has_value() == false);
+static_assert(multiply(std::numeric_limits<std::int32_t>::lowest(), std::int32_t{ 2 }).has_value() == false);
+static_assert(multiply(std::numeric_limits<std::int32_t>::lowest(), std::int32_t{ -1 }).has_value() == false);
+static_assert(multiply(std::int32_t{ 1000000 }, std::int32_t{ 1000 }) == 1000000000);
+
+//  -- int32_t explicit, int32_t, int32_t --
+static_assert(multiply<std::int32_t>(std::numeric_limits<std::int32_t>::max(), std::int32_t{ 2 }).has_value() == false);
+static_assert(multiply<std::int32_t>(std::numeric_limits<std::int32_t>::lowest(), std::int32_t{ 2 }).has_value() == false);
+static_assert(multiply<std::int32_t>(std::numeric_limits<std::int32_t>::lowest(), std::int32_t{ -1 }).has_value() == false);
+static_assert(multiply<std::int32_t>(std::int32_t{ 1000000 }, std::int32_t{ 1000 }) == 1000000000);
+
+//  -- uint32_t explicit, int32_t, int32_t --
+static_assert(multiply<std::uint32_t>(std::numeric_limits<std::int32_t>::max(), std::int32_t{ 2 }) == 4294967294u);
+static_assert(multiply<std::uint32_t>(std::numeric_limits<std::int32_t>::max(), std::int32_t{ 3 }).has_value() == false);
+static_assert(multiply<std::uint32_t>(std::numeric_limits<std::int32_t>::lowest(), std::int32_t{ 2 }).has_value() == false);
+static_assert(multiply<std::uint32_t>(std::int32_t{ 1000000 }, std::int32_t{ 1000 }) == 1000000000u);
+
+//  -- uint32_t explicit, uint32_t, int32_t --
+static_assert(multiply<std::uint32_t>(std::uint32_t{ 1000000 }, std::int32_t{ 1000 }) == std::uint32_t{ 1000000000 });
+static_assert(multiply<std::uint32_t>(std::numeric_limits<std::uint32_t>::max(), std::int32_t{ 2 }).has_value() == false);
+static_assert(multiply<std::uint32_t>(std::numeric_limits<std::uint32_t>::max(), std::int32_t{ -1 }).has_value() == false);
+static_assert(multiply<std::uint32_t>(std::uint32_t{ 1000000000 }, std::int32_t{ -1 }).has_value() == false);
+
+//  -- uint32_t explicit, int32_t, uint32_t --
+static_assert(multiply<std::uint32_t>(std::int32_t{ 1000000 }, std::uint32_t{ 1000 }) == std::uint32_t{ 1000000000 });
+static_assert(multiply<std::uint32_t>(std::numeric_limits<std::int32_t>::max(), std::uint32_t{ 2 }) == 4294967294u);
+static_assert(multiply<std::uint32_t>(std::numeric_limits<std::int32_t>::lowest(), std::uint32_t{ 2 }).has_value() == false);
+static_assert(multiply<std::uint32_t>(std::int32_t{ 65536 }, std::uint32_t{ 65536 }).has_value() == false);
+static_assert(multiply<std::uint32_t>(std::int32_t{ 1000 }, std::uint32_t{ 1000000 }) == std::uint32_t{ 1000000000 });
 
 #endif
 
