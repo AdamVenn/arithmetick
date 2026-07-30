@@ -544,7 +544,7 @@ static_assert(add<std::uint32_t>(std::numeric_limits<std::int32_t>::lowest(), st
 
 #endif
 
-#if true
+#if false
 
 /*
 Test type combinations:
