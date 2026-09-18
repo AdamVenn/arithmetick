@@ -40,8 +40,8 @@ concept arithmetic_concept = std::integral<T> || std::floating_point<T>;
 template <arithmetic_concept CastType = double>
 constexpr CastType round(double value)
 {
-    auto truncated = static_cast<std::int64_t>(value);
-    double remainder = value - truncated;
+    auto truncated = static_cast<double>(static_cast<std::int64_t>(value));
+    double remainder{ value - truncated };
 
     if (remainder >= 0.5)
         return static_cast<CastType>(truncated + 1);
