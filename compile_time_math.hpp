@@ -53,12 +53,12 @@ constexpr CastType round(double value)
 
 constexpr double floor(double value)
 {
-    int truncated = static_cast<int>(value);
+    auto truncated = static_cast<double>(static_cast<std::int64_t>(value));
 
     if (value >= 0.0 || value == truncated)
-        return static_cast<double>(truncated);
+        return truncated;
     else
-        return static_cast<double>(truncated - 1);
+        return truncated - 1.0;
 }
 
 } // compile_time_math
